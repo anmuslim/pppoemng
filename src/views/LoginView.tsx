@@ -105,13 +105,30 @@ export const LoginView: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white font-semibold rounded-xl transition-all shadow-md shadow-sky-600/20 disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white font-semibold rounded-xl transition-all shadow-md shadow-sky-600/20 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
             >
               {loading && <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
               <span>Masuk Sebagai Administrator</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
+
+          {/* Quick Demo Credentials Helper */}
+          <div className="pt-3 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between text-xs text-slate-500 dark:text-zinc-400">
+            <span>
+              Default: <code className="font-mono text-slate-800 dark:text-zinc-200">admin</code> / <code className="font-mono text-slate-800 dark:text-zinc-200">admin123</code>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setUsername('admin');
+                setPassword('admin123');
+              }}
+              className="text-sky-600 dark:text-sky-400 hover:text-sky-500 dark:hover:text-sky-300 font-semibold cursor-pointer underline underline-offset-2"
+            >
+              Isi Cepat
+            </button>
+          </div>
         </div>
 
         {/* Security badge footer */}

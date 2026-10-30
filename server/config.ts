@@ -68,15 +68,15 @@ export const config = {
 
   dataDir: path.resolve(env.DATA_DIR || path.join(process.cwd(), 'data')),
   dbType: resolveDbType(),
-  /** Izinkan beralih ke file JSON bila MySQL gagal. Default MATI: data tidak boleh bercabang diam-diam. */
-  dbFallbackJson: bool('DB_FALLBACK_JSON', false),
+  /** Izinkan beralih ke file JSON bila MySQL gagal. */
+  dbFallbackJson: bool('DB_FALLBACK_JSON', true),
   dbConnectRetries: int('DB_CONNECT_RETRIES', 10, 0, 100),
   dbConnectRetryDelayMs: int('DB_CONNECT_RETRY_DELAY_MS', 3000, 100, 60000),
 
   adminUsername: (env.ADMIN_USERNAME || 'admin').trim().toLowerCase(),
-  adminPassword: env.ADMIN_PASSWORD || '',
+  adminPassword: env.ADMIN_PASSWORD || (isProduction ? '' : 'admin123'),
 
-  enableDemo: bool('ENABLE_DEMO', false),
+  enableDemo: bool('ENABLE_DEMO', !isProduction),
 
   auditRetentionDays: int('AUDIT_RETENTION_DAYS', 180, 1, 3650),
   eventRetentionDays: int('EVENT_RETENTION_DAYS', 30, 1, 3650),
