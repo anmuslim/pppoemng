@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { api } from '../api/client.ts';
-import { useLoadGuard } from '../hooks/useAutoLoad.ts';
-import { OverviewData, SessionTrendRecord, SessionTrendResponse } from '../types/index.ts';
+import { useLoadGuard, useAutoLoad } from '../hooks/useAutoLoad.ts';
+import { OverviewData } from '../types/index.ts';
 import { useRouterContext } from '../context/RouterContext.tsx';
 import {
   Server,
@@ -16,33 +16,7 @@ import {
   ExternalLink,
   RotateCw,
   TrendingUp,
-  Download,
-  Calendar,
-  Gauge,
-  Play,
-  Pause,
-  Database,
 } from 'lucide-react';
-
-export type TrendRange = '1h' | '24h' | '7d' | '30d' | '1y';
-
-const RANGE_LABELS: Record<TrendRange, { label: string; full: string; stepDesc: string }> = {
-  '1h': { label: '1 Jam', full: '1 Jam Terakhir', stepDesc: 'Tiap 1-2 menit' },
-  '24h': { label: 'Harian', full: '24 Jam Terakhir', stepDesc: 'Tiap 20 menit' },
-  '7d': { label: 'Mingguan', full: '7 Hari Terakhir', stepDesc: 'Tiap 2 jam' },
-  '30d': { label: 'Bulanan', full: '30 Hari Terakhir', stepDesc: 'Tiap 8 jam' },
-  '1y': { label: 'Tahunan', full: '1 Tahun Terakhir', stepDesc: 'Tiap 3-4 hari' },
-};
-
-const POLLING_INTERVALS = [
-  { val: 1, label: '1s (Cepat)' },
-  { val: 3, label: '3s' },
-  { val: 5, label: '5s (Default)' },
-  { val: 10, label: '10s' },
-  { val: 30, label: '30s' },
-  { val: 60, label: '60s' },
-  { val: 0, label: 'Jeda (Pause)' },
-];
 
 export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ onNavigateTo }) => {
   const { refreshTick, setSelectedRouterId, triggerManualRefresh } = useRouterContext();
@@ -50,176 +24,55 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Time range & polling interval states
-  const [selectedRange, setSelectedRange] = useState<TrendRange>(() => {
-    try {
-      const saved = localStorage.getItem('pppoe_trend_range');
-      if (saved && ['1h', '24h', '7d', '30d', '1y'].includes(saved)) {
-        return saved as TrendRange;
-      }
-    } catch {}
-    return '24h';
-  });
-
-  const [pollingIntervalSec, setPollingIntervalSec] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('pppoe_trend_interval');
-      if (saved !== null && !isNaN(Number(saved))) {
-        return Number(saved);
-      }
-    } catch {}
-    return 5;
-  });
-
-  // Persistent historical trend state
-  const [trendData, setTrendData] = useState<SessionTrendResponse | null>(null);
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  // History for active user chart polling
+  const [userHistory, setUserHistory] = useState<Array<{ time: string; count: number }>>([]);
 
   const guard = useLoadGuard();
-
-  const handleRangeChange = (range: TrendRange) => {
-    setSelectedRange(range);
+  const fetchOverview = async (silent: boolean = false) => {
+    const run = guard.start(silent);
+    if (!run) return;
     try {
-      localStorage.setItem('pppoe_trend_range', range);
-    } catch {}
-  };
-
-  const handleIntervalChange = (val: number) => {
-    setPollingIntervalSec(val);
-    try {
-      localStorage.setItem('pppoe_trend_interval', String(val));
-    } catch {}
-  };
-
-  // Fetch overview & trend data
-  const fetchData = useCallback(
-    async (silent: boolean = false) => {
-      const run = guard.start(silent);
-      if (!run) return;
-      try {
-        if (!silent) setLoading(true);
-
-        const [resOverview, resTrends] = await Promise.all([
-          api.overview.get(),
-          api.overview.getTrends(selectedRange),
-        ]);
-
-        if (!run.isCurrent()) return;
-
-        if (resOverview.success && resOverview.data) {
-          setData(resOverview.data);
-          setError(null);
-        }
-
-        if (resTrends.success && resTrends.data) {
-          setTrendData(resTrends.data);
-        }
-      } catch (err: any) {
-        if (run.isCurrent()) {
-          setError(err.message || 'Gagal memuat overview');
-        }
-      } finally {
-        if (run.isCurrent()) setLoading(false);
-        run.end();
+      const res = await api.overview.get();
+      if (!run.isCurrent()) return;
+      if (res.success && res.data) {
+        setData(res.data);
+        setError(null);
+        // Riwayat grafik hanya berisi sampel NYATA dari polling (maks. 30 titik terakhir).
+        const now = new Date();
+        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+        setUserHistory((prev) => [...prev, { time: timeStr, count: res.data.stats.totalActive }].slice(-30));
       }
-    },
-    [guard, selectedRange]
-  );
-
-  // Initial load and on manual refreshTick or range change
-  useEffect(() => {
-    fetchData(false);
-  }, [fetchData, refreshTick, selectedRange]);
-
-  // Periodic polling timer
-  useEffect(() => {
-    if (pollingIntervalSec <= 0) return;
-    const intervalId = setInterval(() => {
-      fetchData(true);
-    }, pollingIntervalSec * 1000);
-
-    return () => clearInterval(intervalId);
-  }, [fetchData, pollingIntervalSec]);
-
-  const stats = data?.stats;
-
-  // Format date labels nicely based on range
-  const formatTimestamp = (ts: string, range: TrendRange) => {
-    try {
-      const d = new Date(ts);
-      if (isNaN(d.getTime())) return ts;
-      if (range === '1h') {
-        return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      }
-      if (range === '24h') {
-        return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-      }
-      if (range === '7d' || range === '30d') {
-        return `${d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString('id-ID', {
-          hour: '2-digit',
-          minute: '2-digit',
-        })}`;
-      }
-      return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
-    } catch {
-      return ts;
+    } catch (err: any) {
+      if (run.isCurrent()) setError(err.message || 'Gagal memuat overview');
+    } finally {
+      if (run.isCurrent()) setLoading(false);
+      run.end();
     }
   };
 
-  // Export CSV
-  const handleExportCsv = () => {
-    if (!trendData || trendData.points.length === 0) return;
-    const headers = ['Timestamp', 'Waktu Lokal', 'Sesi Aktif (PPPoE)', 'Total Secrets', 'Download Mbps (Tx)', 'Upload Mbps (Rx)'];
-    const rows = trendData.points.map((p) => [
-      p.timestamp,
-      `"${new Date(p.timestamp).toLocaleString('id-ID')}"`,
-      p.totalActive,
-      p.totalSecrets ?? '',
-      p.totalTrafficRxMbps ?? '',
-      p.totalTrafficTxMbps ?? '',
-    ]);
+  useAutoLoad(fetchOverview, 'overview', refreshTick);
 
-    const csvContent =
-      'data:text/csv;charset=utf-8,\uFEFF' +
-      [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute(
-      'download',
-      `pppoe-sesi-tren-${selectedRange}-${new Date().toISOString().slice(0, 10)}.csv`
-    );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  const stats = data?.stats;
 
   // SVG Chart Calculations
   const chartSvg = useMemo(() => {
-    const pointsList = trendData?.points || [];
-    if (pointsList.length < 2) return null;
-
-    const counts = pointsList.map((h) => h.totalActive);
-    const rawMin = Math.min(...counts);
-    const rawMax = Math.max(...counts);
-    const paddingVal = Math.max(2, Math.round((rawMax - rawMin) * 0.15));
-    const min = Math.max(0, rawMin - paddingVal);
-    const max = rawMax + paddingVal;
+    if (userHistory.length < 2) return null;
+    const counts = userHistory.map((h) => h.count);
+    const min = Math.max(0, Math.min(...counts) - 5);
+    const max = Math.max(...counts) + 5;
     const range = max - min || 1;
 
-    const width = 640;
-    const height = 160;
-    const paddingX = 18;
-    const paddingTop = 20;
-    const paddingBottom = 22;
+    const width = 600;
+    const height = 140;
+    const padding = 20;
 
-    const points = pointsList.map((h, i) => {
-      const x = paddingX + (i / (pointsList.length - 1)) * (width - paddingX * 2);
-      const y = height - paddingBottom - ((h.totalActive - min) / range) * (height - paddingTop - paddingBottom);
-      return { x, y, record: h, index: i };
+    const points = userHistory.map((h, i) => {
+      const x = padding + (i / (userHistory.length - 1)) * (width - padding * 2);
+      const y = height - padding - ((h.count - min) / range) * (height - padding * 2);
+      return { x, y, count: h.count, time: h.time };
     });
 
-    // Smooth cubic bezier spline
+    // Generate smooth bezier path
     let pathD = `M ${points[0].x} ${points[0].y}`;
     for (let i = 0; i < points.length - 1; i++) {
       const p0 = points[i];
@@ -228,18 +81,10 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
       pathD += ` C ${mx} ${p0.y}, ${mx} ${p1.y}, ${p1.x} ${p1.y}`;
     }
 
-    const areaD = `${pathD} L ${points[points.length - 1].x} ${height - paddingBottom} L ${points[0].x} ${
-      height - paddingBottom
-    } Z`;
+    const areaD = `${pathD} L ${points[points.length - 1].x} ${height} L ${points[0].x} ${height} Z`;
 
-    return { points, pathD, areaD, min, max, width, height, paddingX, paddingTop, paddingBottom };
-  }, [trendData]);
-
-  // Selected or hovered point
-  const currentHoveredPoint =
-    hoveredIndex !== null && chartSvg && chartSvg.points[hoveredIndex]
-      ? chartSvg.points[hoveredIndex]
-      : null;
+    return { points, pathD, areaD, min, max, width, height };
+  }, [userHistory]);
 
   return (
     <div className="space-y-6">
@@ -377,16 +222,10 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
             </span>
           </div>
           <div className="mt-2 flex items-center justify-between text-[10px] font-mono">
-            <span
-              className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold"
-              title="Total Download pelanggan (MikroTik Tx)"
-            >
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold" title="Total Download pelanggan (MikroTik Tx)">
               <ArrowDownLeft className="w-3 h-3" /> DL: {stats?.totalTrafficTx || '0 bps'}
             </span>
-            <span
-              className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold"
-              title="Total Upload pelanggan (MikroTik Rx)"
-            >
+            <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold" title="Total Upload pelanggan (MikroTik Rx)">
               <ArrowUpRight className="w-3 h-3" /> UL: {stats?.totalTrafficRx || '0 bps'}
             </span>
           </div>
@@ -395,306 +234,100 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
 
       {/* Grid: Active Users Line Chart & Recent Activity Events */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Realtime Active Users Chart & Historical Trends */}
+        {/* Realtime Active Users Chart */}
         <div className="lg:col-span-2 p-5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl shadow-xs">
-          {/* Header Bar with Range & Polling Controls */}
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+          <div className="flex items-center justify-between mb-4">
             <div>
-              <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
                 <TrendingUp className="w-4 h-4 text-sky-500" />
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Tren Sesi PPPoE Aktif Realtime
-                </h3>
-                {trendData?.totalRecorded !== undefined && (
-                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 font-mono font-medium">
-                    <Database className="w-3 h-3 text-sky-500" />
-                    <span>{trendData.totalRecorded.toLocaleString('id-ID')} titik terekam</span>
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-400 dark:text-zinc-500 mt-0.5">
-                Semua data dari awal terekam terpusat · {RANGE_LABELS[selectedRange].full} ({RANGE_LABELS[selectedRange].stepDesc})
+                <span>Tren Sesi PPPoE Aktif Realtime</span>
+              </h3>
+              <p className="text-[11px] text-slate-400 dark:text-zinc-500">
+                Diperbarui secara berkala sesuai interval auto-refresh
               </p>
             </div>
-
-            {/* Controls: Range selector, polling interval & CSV export */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Range Selector Pill Group */}
-              <div className="flex items-center bg-slate-100 dark:bg-zinc-800/90 p-0.5 rounded-lg border border-slate-200 dark:border-zinc-700 text-xs">
-                {(['1h', '24h', '7d', '30d', '1y'] as TrendRange[]).map((r) => {
-                  const active = selectedRange === r;
-                  return (
-                    <button
-                      key={r}
-                      onClick={() => handleRangeChange(r)}
-                      className={`px-2.5 py-1 rounded-md font-medium text-[11px] transition-all cursor-pointer ${
-                        active
-                          ? 'bg-sky-600 text-white font-semibold shadow-2xs'
-                          : 'text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white'
-                      }`}
-                      title={RANGE_LABELS[r].full}
-                    >
-                      {RANGE_LABELS[r].label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Polling Interval Selector */}
-              <div className="flex items-center gap-1 bg-white dark:bg-zinc-850 px-2 py-1 rounded-lg border border-slate-200 dark:border-zinc-700 text-xs">
-                <Gauge className="w-3.5 h-3.5 text-amber-500" />
-                <select
-                  value={pollingIntervalSec}
-                  onChange={(e) => handleIntervalChange(Number(e.target.value))}
-                  className="bg-transparent text-[11px] font-mono text-slate-700 dark:text-zinc-200 focus:outline-hidden cursor-pointer"
-                  title="Atur interval waktu auto-refresh polling grafik"
-                >
-                  {POLLING_INTERVALS.map((opt) => (
-                    <option key={opt.val} value={opt.val} className="dark:bg-zinc-800">
-                      Poll: {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Export CSV button */}
-              <button
-                onClick={handleExportCsv}
-                disabled={!trendData || trendData.points.length === 0}
-                className="p-1.5 text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 border border-slate-200 dark:border-zinc-700 rounded-lg transition-colors cursor-pointer"
-                title="Export riwayat data tren ke CSV"
-                aria-label="Export CSV"
-              >
-                <Download className="w-3.5 h-3.5" />
-              </button>
+            <div className="text-right">
+              <span className="text-lg font-bold font-mono text-emerald-500 tabular-nums">
+                {stats?.totalActive || 0}
+              </span>
+              <span className="text-[11px] text-slate-400 ml-1">Klien</span>
             </div>
           </div>
 
-          {/* Quick Metrics Bar (Current, Peak, Min, Avg) */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 text-xs">
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-850 border border-slate-200 dark:border-zinc-800 flex items-center justify-between">
-              <div>
-                <span className="text-[10px] text-slate-400 block font-medium">Saat Ini</span>
-                <span className="font-mono font-bold text-base text-emerald-600 dark:text-emerald-400 tabular-nums">
-                  {trendData?.stats.current ?? stats?.totalActive ?? 0}
-                </span>
-                <span className="text-[10px] text-slate-400 ml-1">Klien</span>
-              </div>
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            </div>
-
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-850 border border-slate-200 dark:border-zinc-800">
-              <span className="text-[10px] text-slate-400 block font-medium">Tertinggi (Puncak)</span>
-              <div className="flex items-baseline gap-1">
-                <span className="font-mono font-bold text-base text-sky-600 dark:text-sky-400 tabular-nums">
-                  {trendData?.stats.max ?? stats?.totalActive ?? 0}
-                </span>
-                <span className="text-[10px] text-slate-400">Klien</span>
-              </div>
-              {trendData?.stats.peakTime && (
-                <span className="text-[9px] text-slate-400 block truncate font-mono">
-                  {formatTimestamp(trendData.stats.peakTime, selectedRange)}
-                </span>
-              )}
-            </div>
-
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-850 border border-slate-200 dark:border-zinc-800">
-              <span className="text-[10px] text-slate-400 block font-medium">Terendah</span>
-              <div className="flex items-baseline gap-1">
-                <span className="font-mono font-bold text-base text-amber-600 dark:text-amber-400 tabular-nums">
-                  {trendData?.stats.min ?? 0}
-                </span>
-                <span className="text-[10px] text-slate-400">Klien</span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-850 border border-slate-200 dark:border-zinc-800">
-              <span className="text-[10px] text-slate-400 block font-medium">Rata-rata Sesi</span>
-              <div className="flex items-baseline gap-1">
-                <span className="font-mono font-bold text-base text-purple-600 dark:text-purple-400 tabular-nums">
-                  {trendData?.stats.avg ?? 0}
-                </span>
-                <span className="text-[10px] text-slate-400">Klien</span>
-              </div>
-            </div>
-          </div>
-
-          {/* SVG Line Chart with Interactive Mouse Movement & Hover Tooltip */}
-          <div
-            className="relative w-full h-48 bg-slate-50 dark:bg-zinc-850/60 rounded-lg p-2 border border-slate-200 dark:border-zinc-750 overflow-hidden cursor-crosshair select-none"
-            onMouseLeave={() => setHoveredIndex(null)}
-            onMouseMove={(e) => {
-              if (!chartSvg || chartSvg.points.length === 0) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const relativeX = (e.clientX - rect.left) / rect.width;
-              const idx = Math.min(
-                chartSvg.points.length - 1,
-                Math.max(0, Math.round(relativeX * (chartSvg.points.length - 1)))
-              );
-              setHoveredIndex(idx);
-            }}
-          >
+          {/* SVG Line Chart */}
+          <div className="relative w-full h-44 bg-slate-50 dark:bg-zinc-850/60 rounded-lg p-2 border border-slate-200 dark:border-zinc-750 overflow-hidden">
             {chartSvg ? (
-              <>
-                <svg
-                  viewBox={`0 0 ${chartSvg.width} ${chartSvg.height}`}
-                  className="w-full h-full overflow-visible"
-                  preserveAspectRatio="none"
-                >
-                  <defs>
-                    <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.38" />
-                      <stop offset="85%" stopColor="#0ea5e9" stopOpacity="0.04" />
-                      <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.0" />
-                    </linearGradient>
-                  </defs>
+              <svg
+                viewBox={`0 0 ${chartSvg.width} ${chartSvg.height}`}
+                className="w-full h-full overflow-visible"
+                preserveAspectRatio="none"
+              >
+                <defs>
+                  <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.35" />
+                    <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.0" />
+                  </linearGradient>
+                </defs>
 
-                  {/* Horizontal Grid lines */}
-                  <line
-                    x1={chartSvg.paddingX}
-                    y1={chartSvg.paddingTop + 20}
-                    x2={chartSvg.width - chartSvg.paddingX}
-                    y2={chartSvg.paddingTop + 20}
-                    stroke="currentColor"
-                    className="text-slate-200 dark:text-zinc-750"
-                    strokeDasharray="4 4"
+                {/* Subtle horizontal grid lines */}
+                <line
+                  x1="20"
+                  y1="35"
+                  x2="580"
+                  y2="35"
+                  stroke="currentColor"
+                  className="text-slate-300 dark:text-zinc-700"
+                  strokeDasharray="3 3"
+                />
+                <line
+                  x1="20"
+                  y1="85"
+                  x2="580"
+                  y2="85"
+                  stroke="currentColor"
+                  className="text-slate-300 dark:text-zinc-700"
+                  strokeDasharray="3 3"
+                />
+
+                {/* Area under curve */}
+                <path d={chartSvg.areaD} fill="url(#chartGradient)" />
+
+                {/* Smooth Curve */}
+                <path
+                  d={chartSvg.pathD}
+                  fill="none"
+                  stroke="#0ea5e9"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+
+                {/* Data Points */}
+                {chartSvg.points.map((pt, idx) => (
+                  <circle
+                    key={idx}
+                    cx={pt.x}
+                    cy={pt.y}
+                    r={idx === chartSvg.points.length - 1 ? 4.5 : 3}
+                    className={
+                      idx === chartSvg.points.length - 1
+                        ? 'fill-sky-400 stroke-white dark:stroke-zinc-900 stroke-2'
+                        : 'fill-sky-500'
+                    }
                   />
-                  <line
-                    x1={chartSvg.paddingX}
-                    y1={chartSvg.height / 2}
-                    x2={chartSvg.width - chartSvg.paddingX}
-                    y2={chartSvg.height / 2}
-                    stroke="currentColor"
-                    className="text-slate-200 dark:text-zinc-750"
-                    strokeDasharray="4 4"
-                  />
-                  <line
-                    x1={chartSvg.paddingX}
-                    y1={chartSvg.height - chartSvg.paddingBottom}
-                    x2={chartSvg.width - chartSvg.paddingX}
-                    y2={chartSvg.height - chartSvg.paddingBottom}
-                    stroke="currentColor"
-                    className="text-slate-200 dark:text-zinc-750"
-                    strokeDasharray="4 4"
-                  />
-
-                  {/* Area under curve */}
-                  <path d={chartSvg.areaD} fill="url(#chartGradient)" />
-
-                  {/* Smooth Curve */}
-                  <path
-                    d={chartSvg.pathD}
-                    fill="none"
-                    stroke="#0ea5e9"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-
-                  {/* Vertical Hairline guide on Hover */}
-                  {currentHoveredPoint && (
-                    <line
-                      x1={currentHoveredPoint.x}
-                      y1={chartSvg.paddingTop}
-                      x2={currentHoveredPoint.x}
-                      y2={chartSvg.height - chartSvg.paddingBottom}
-                      stroke="#38bdf8"
-                      strokeWidth="1.5"
-                      strokeDasharray="3 3"
-                    />
-                  )}
-
-                  {/* Data Points (Highlight end point & hovered point) */}
-                  {chartSvg.points.map((pt, idx) => {
-                    const isLast = idx === chartSvg.points.length - 1;
-                    const isHovered = hoveredIndex === idx;
-                    if (!isLast && !isHovered && chartSvg.points.length > 40) return null;
-
-                    return (
-                      <circle
-                        key={idx}
-                        cx={pt.x}
-                        cy={pt.y}
-                        r={isHovered ? 5.5 : isLast ? 4 : 2.5}
-                        className={
-                          isHovered
-                            ? 'fill-sky-400 stroke-white dark:stroke-zinc-900 stroke-2'
-                            : isLast
-                            ? 'fill-emerald-400 stroke-white dark:stroke-zinc-900 stroke-2'
-                            : 'fill-sky-500'
-                        }
-                      />
-                    );
-                  })}
-                </svg>
-
-                {/* Floating Interactive Tooltip */}
-                {currentHoveredPoint && (
-                  <div
-                    className="absolute pointer-events-none z-30 transition-all duration-75 shadow-xl rounded-lg bg-slate-900/95 dark:bg-zinc-800/95 text-white p-2.5 text-xs border border-slate-700 dark:border-zinc-700 min-w-[170px]"
-                    style={{
-                      left: `${Math.min(
-                        80,
-                        Math.max(10, (currentHoveredPoint.index / (chartSvg.points.length - 1)) * 100)
-                      )}%`,
-                      top: '12px',
-                      transform: 'translateX(-50%)',
-                    }}
-                  >
-                    <div className="text-[10px] text-slate-300 font-mono flex items-center justify-between pb-1 border-b border-slate-700">
-                      <span>{formatTimestamp(currentHoveredPoint.record.timestamp, selectedRange)}</span>
-                      <span className="text-emerald-400 font-semibold font-sans">PPPoE</span>
-                    </div>
-
-                    <div className="mt-1.5 flex items-baseline justify-between font-mono">
-                      <span className="text-slate-400 text-[11px]">Sesi Aktif:</span>
-                      <span className="text-emerald-400 font-bold text-sm">
-                        {currentHoveredPoint.record.totalActive} Klien
-                      </span>
-                    </div>
-
-                    {currentHoveredPoint.record.totalTrafficRxMbps !== undefined && (
-                      <div className="mt-1 text-[10px] font-mono flex items-center justify-between text-slate-300">
-                        <span className="flex items-center gap-1 text-emerald-400">
-                          <ArrowDownLeft className="w-3 h-3" /> DL (Tx):
-                        </span>
-                        <span>{currentHoveredPoint.record.totalTrafficRxMbps} Mbps</span>
-                      </div>
-                    )}
-
-                    {currentHoveredPoint.record.totalTrafficTxMbps !== undefined && (
-                      <div className="text-[10px] font-mono flex items-center justify-between text-slate-300">
-                        <span className="flex items-center gap-1 text-sky-400">
-                          <ArrowUpRight className="w-3 h-3" /> UL (Rx):
-                        </span>
-                        <span>{currentHoveredPoint.record.totalTrafficTxMbps} Mbps</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
+                ))}
+              </svg>
             ) : (
               <div className="h-full flex items-center justify-center text-xs text-slate-500 dark:text-zinc-400">
-                Memuat riwayat sesi PPPoE...
+                Mengumpulkan data tren realtime...
               </div>
             )}
           </div>
 
-          {/* Timeline markers at bottom */}
-          <div className="mt-2.5 flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400 font-mono">
-            <span>
-              {trendData?.points && trendData.points.length > 0
-                ? formatTimestamp(trendData.points[0].timestamp, selectedRange)
-                : 'Awal'}
-            </span>
-            <span className="text-slate-400 dark:text-zinc-500 font-sans text-[10px]">
-              Rentang: {RANGE_LABELS[selectedRange].full} · Hover pada grafik untuk melihat rincian
-            </span>
-            <span>
-              {trendData?.points && trendData.points.length > 0
-                ? formatTimestamp(trendData.points[trendData.points.length - 1].timestamp, selectedRange)
-                : 'Sekarang'}
-            </span>
+          <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400 font-mono">
+            <span>{userHistory[0]?.time || 'T-start'}</span>
+            <span className="text-slate-600 dark:text-zinc-400 font-sans">Rentang Waktu Terakhir</span>
+            <span>{userHistory[userHistory.length - 1]?.time || 'Sekarang'}</span>
           </div>
         </div>
 
@@ -714,7 +347,7 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
                 data.recentEvents.map((evt) => (
                   <div
                     key={evt.id}
-                    className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-850/70 border border-slate-200 dark:border-zinc-700 text-xs flex items-center justify-between"
+                    className="p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-800/70 border border-slate-200 dark:border-zinc-700 text-xs flex items-center justify-between"
                   >
                     <div className="min-w-0 pr-2">
                       <div className="flex items-center gap-2">
@@ -749,16 +382,14 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
                   </div>
                 ))
               ) : (
-                <div className="text-center py-8 text-xs text-slate-500 dark:text-zinc-400">
-                  Belum ada aktivitas sesi tercatat.
-                </div>
+                <div className="text-center py-8 text-xs text-slate-500 dark:text-zinc-400">Belum ada aktivitas sesi tercatat.</div>
               )}
             </div>
           </div>
 
           <button
             onClick={() => onNavigateTo('audit')}
-            className="mt-4 w-full py-2 text-center text-xs font-semibold text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-lg transition-colors border border-sky-200 dark:border-sky-900 cursor-pointer"
+            className="mt-4 w-full py-2 text-center text-xs font-semibold text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-lg transition-colors border border-sky-200 dark:border-sky-900"
           >
             Lihat Riwayat Audit Lengkap →
           </button>
@@ -778,7 +409,7 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
           </div>
           <button
             onClick={() => onNavigateTo('routers')}
-            className="text-xs font-semibold text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 cursor-pointer"
+            className="text-xs font-semibold text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1"
           >
             <span>Kelola Router</span>
             <ExternalLink className="w-3.5 h-3.5" />
@@ -858,7 +489,7 @@ export const DashboardView: React.FC<{ onNavigateTo: (tab: any) => void }> = ({ 
                             setSelectedRouterId(r.id);
                             onNavigateTo('secrets');
                           }}
-                          className="px-2.5 py-1 text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40 rounded-md border border-sky-200 dark:border-sky-800 transition-colors cursor-pointer"
+                          className="px-2.5 py-1 text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40 rounded-md border border-sky-200 dark:border-sky-800 transition-colors"
                         >
                           Kelola Secrets
                         </button>

@@ -24,7 +24,6 @@ import {
   AlertCircle,
   Layers,
 } from 'lucide-react';
-import { copyToClipboard } from '../../utils/clipboard.ts';
 
 interface ActiveSessionDetailModalProps {
   session: PppActive | null;
@@ -265,12 +264,10 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
     }
   };
 
-  const handleCopyField = async (text: string, field: string) => {
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 1500);
-    }
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 1500);
   };
 
   const handleRunPing = async (customIp?: string) => {
@@ -311,7 +308,7 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
     }
   };
 
-  const copyPingResults = async () => {
+  const copyPingResults = () => {
     if (!pingStats || pingPackets.length === 0) return;
     const targetHost = pingAddress || session?.address || '127.0.0.1';
     const lines = [
@@ -326,11 +323,9 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
       `${pingStats.sent} packets transmitted, ${pingStats.received} received, ${pingStats.packetLoss}% packet loss`,
       `rtt min/avg/max = ${pingStats.minRtt}/${pingStats.avgRtt}/${pingStats.maxRtt} ms`,
     ];
-    const ok = await copyToClipboard(lines.join('\n'));
-    if (ok) {
-      setPingCopied(true);
-      setTimeout(() => setPingCopied(false), 1500);
-    }
+    navigator.clipboard.writeText(lines.join('\n'));
+    setPingCopied(true);
+    setTimeout(() => setPingCopied(false), 1500);
   };
 
   if (!session) return null;
@@ -595,7 +590,7 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => handleCopyField(session.address || '', 'ip')}
+                        onClick={() => copyToClipboard(session.address || '', 'ip')}
                         className="p-1 text-slate-400 hover:text-sky-600 rounded transition-colors"
                         title="Salin IP"
                         aria-label="Salin IP Address"
@@ -642,7 +637,7 @@ export const ActiveSessionDetailModal: React.FC<ActiveSessionDetailModalProps> =
                     <span className="text-[10px] text-slate-400 block">Caller ID / MAC Dial-in</span>
                     <button
                       type="button"
-                      onClick={() => handleCopyField(session.callerId || '', 'mac')}
+                      onClick={() => copyToClipboard(session.callerId || '', 'mac')}
                       className="p-1 text-slate-400 hover:text-sky-600 rounded transition-colors"
                       title="Salin MAC"
                       aria-label="Salin MAC Address"

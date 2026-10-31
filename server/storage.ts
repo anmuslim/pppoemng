@@ -78,23 +78,12 @@ type DemoStore = {
   active: any[];
 };
 
-export interface SessionTrendRecord {
-  id: string;
-  timestamp: string;
-  totalActive: number;
-  totalSecrets?: number;
-  totalTrafficTxMbps?: number;
-  totalTrafficRxMbps?: number;
-  routerBreakdown?: Record<string, number>;
-}
-
 interface AppDatabase {
   routers: RouterConfig[];
   users: AdminUser[];
   auditLogs: AuditLogItem[];
   recentEvents: RecentEvent[];
   demoData?: Record<string, DemoStore>;
-  sessionTrends?: SessionTrendRecord[];
 }
 
 const ROUTER_COLUMNS = [
@@ -138,7 +127,7 @@ const DEFAULT_OPERATOR_MENUS = ['dashboard', 'secrets', 'active'];
  * ------------------------------------------------------------------ */
 
 class StorageManager {
-  private db: AppDatabase = { routers: [], users: [], auditLogs: [], recentEvents: [], sessionTrends: [] };
+  private db: AppDatabase = { routers: [], users: [], auditLogs: [], recentEvents: [] };
   private mode: 'mysql' | 'json' | 'uninitialized' = 'uninitialized';
   private initPromise: Promise<void> | null = null;
 
@@ -210,8 +199,6 @@ class StorageManager {
       await this.resetDemo();
       logger.info('ENABLE_DEMO=true: router demo ditambahkan.');
     }
-
-    this.ensureSeedSessionTrends();
 
     this.warnDefaultPasswords();
     await this.prune().catch((e) => logger.warn('Pruning awal gagal', { message: e?.message }));
@@ -370,7 +357,6 @@ class StorageManager {
       auditLogs: Array.isArray(db.auditLogs) ? db.auditLogs : [],
       recentEvents: Array.isArray(db.recentEvents) ? db.recentEvents : [],
       demoData: db.demoData && typeof db.demoData === 'object' ? db.demoData : {},
-      sessionTrends: Array.isArray(db.sessionTrends) ? db.sessionTrends : [],
     };
 
     let modified = false;
@@ -1112,185 +1098,6 @@ class StorageManager {
       await this.flush();
     }
   }
-
-  /* -------------------------- session trends -------------------------- */
-
-  private lastTrendRecordedAt = 0;
-
-  public recordSessionTrend(point: Omit<SessionTrendRecord, 'id'>): void {
-    if (!this.db.sessionTrends) this.db.sessionTrends = [];
-    const now = Date.now();
-    // Throttle minimal 3 detik kecuali belum ada record
-    if (now - this.lastTrendRecordedAt < 3000 && this.db.sessionTrends.length > 0) {
-      return;
-    }
-    this.lastTrendRecordedAt = now;
-
-    const record: SessionTrendRecord = {
-      ...point,
-      id: randomId('trnd'),
-      timestamp: point.timestamp || new Date(now).toISOString(),
-    };
-
-    this.db.sessionTrends.push(record);
-
-    // Batasi maksimum 20.000 titik agar hemat memori & disk
-    if (this.db.sessionTrends.length > 20000) {
-      this.db.sessionTrends.splice(0, this.db.sessionTrends.length - 20000);
-    }
-
-    if (this.mode !== 'mysql') {
-      this.markJsonDirty();
-    }
-  }
-
-  public getSessionTrends(rangeStr: string = '24h') {
-    const records = this.db.sessionTrends || [];
-    const now = Date.now();
-    let msAgo = 24 * 3600 * 1000;
-    const r = rangeStr.toLowerCase();
-
-    if (r === '1h' || r === 'jam') msAgo = 3600 * 1000;
-    else if (r === '24h' || r === 'harian' || r === '1d') msAgo = 24 * 3600 * 1000;
-    else if (r === '7d' || r === 'mingguan' || r === '1w') msAgo = 7 * 24 * 3600 * 1000;
-    else if (r === '30d' || r === 'bulanan' || r === '1m') msAgo = 30 * 24 * 3600 * 1000;
-    else if (r === '1y' || r === 'tahunan') msAgo = 365 * 24 * 3600 * 1000;
-
-    const cutoff = new Date(now - msAgo).toISOString();
-    let filtered = records.filter((rec) => rec.timestamp >= cutoff);
-
-    // Jika filtered kosong atau sedikit (misal sistem baru jalan), ambil yang ada atau fallback
-    if (filtered.length === 0 && records.length > 0) {
-      filtered = records.slice(-30);
-    }
-
-    // Downsampling jika terlalu padat (misal > 120 titik) agar performa render grafik SVG tetap ringan
-    const maxPoints = 120;
-    let points: SessionTrendRecord[] = filtered;
-    if (filtered.length > maxPoints) {
-      const step = filtered.length / maxPoints;
-      points = [];
-      for (let i = 0; i < maxPoints; i++) {
-        const index = Math.min(filtered.length - 1, Math.floor(i * step));
-        points.push(filtered[index]);
-      }
-      // Pastikan titik paling akhir selalu disertakan
-      if (filtered.length > 0 && points[points.length - 1] !== filtered[filtered.length - 1]) {
-        points[points.length - 1] = filtered[filtered.length - 1];
-      }
-    }
-
-    // Hitung statistik
-    let min = 0;
-    let max = 0;
-    let sum = 0;
-    let peakTime = '';
-
-    if (points.length > 0) {
-      min = points[0].totalActive;
-      max = points[0].totalActive;
-      peakTime = points[0].timestamp;
-      for (const p of points) {
-        sum += p.totalActive;
-        if (p.totalActive < min) min = p.totalActive;
-        if (p.totalActive > max) {
-          max = p.totalActive;
-          peakTime = p.timestamp;
-        }
-      }
-    }
-
-    const current = points.length > 0 ? points[points.length - 1].totalActive : 0;
-    const avg = points.length > 0 ? Math.round((sum / points.length) * 10) / 10 : 0;
-
-    return {
-      range: r,
-      totalRecorded: records.length,
-      points,
-      stats: {
-        current,
-        min,
-        max,
-        avg,
-        peakTime,
-      },
-    };
-  }
-
-  public ensureSeedSessionTrends(): void {
-    if (!this.db.sessionTrends) {
-      this.db.sessionTrends = [];
-    }
-
-    // Jika sudah ada banyak titik rekaman (>= 25), biarkan
-    if (this.db.sessionTrends.length >= 25) {
-      return;
-    }
-
-    const now = Date.now();
-    const seeded: SessionTrendRecord[] = [];
-
-    // Pola simulasi realistis berdasarkan waktu harian & musiman
-    const calculateValue = (timestampMs: number) => {
-      const d = new Date(timestampMs);
-      const hour = d.getHours() + d.getMinutes() / 60;
-      // Puncak malam hari (20:00 - 22:00), lembah dini hari (03:00 - 05:00)
-      const diurnal = Math.sin(((hour - 14) / 24) * 2 * Math.PI); // -1 to +1
-      const dayFactor = d.getDay() === 0 || d.getDay() === 6 ? 1.15 : 1.0; // Weekend lebih tinggi
-      const base = 48 + diurnal * 14 * dayFactor;
-      // Sedikit jitter deterministik
-      const jitter = ((timestampMs % 17) - 8) * 0.4;
-      const totalActive = Math.max(12, Math.round(base + jitter));
-      const totalSecrets = totalActive + 18;
-      const totalTrafficRxMbps = Math.round((totalActive * 4.2 + (timestampMs % 23) * 1.5) * 10) / 10;
-      const totalTrafficTxMbps = Math.round((totalActive * 1.2 + (timestampMs % 11) * 0.8) * 10) / 10;
-
-      return {
-        id: randomId('trnd'),
-        timestamp: new Date(timestampMs).toISOString(),
-        totalActive,
-        totalSecrets,
-        totalTrafficRxMbps,
-        totalTrafficTxMbps,
-      };
-    };
-
-    // 1. Rekam jejak 1 Tahun (setiap 3-4 hari)
-    const oneYearAgo = now - 365 * 24 * 3600 * 1000;
-    const thirtyDaysAgo = now - 30 * 24 * 3600 * 1000;
-    for (let t = oneYearAgo; t < thirtyDaysAgo; t += 3.5 * 24 * 3600 * 1000) {
-      seeded.push(calculateValue(t));
-    }
-
-    // 2. Rekam jejak 30 Hari (setiap 8 jam)
-    const sevenDaysAgo = now - 7 * 24 * 3600 * 1000;
-    for (let t = thirtyDaysAgo; t < sevenDaysAgo; t += 8 * 3600 * 1000) {
-      seeded.push(calculateValue(t));
-    }
-
-    // 3. Rekam jejak 7 Hari (setiap 2 jam)
-    const oneDayAgo = now - 24 * 3600 * 1000;
-    for (let t = sevenDaysAgo; t < oneDayAgo; t += 2 * 3600 * 1000) {
-      seeded.push(calculateValue(t));
-    }
-
-    // 4. Rekam jejak 24 Jam (setiap 20 menit)
-    const oneHourAgo = now - 3600 * 1000;
-    for (let t = oneDayAgo; t < oneHourAgo; t += 20 * 60 * 1000) {
-      seeded.push(calculateValue(t));
-    }
-
-    // 5. Rekam jejak 1 Jam terakhir (setiap 2 menit)
-    for (let t = oneHourAgo; t <= now; t += 2 * 60 * 1000) {
-      seeded.push(calculateValue(t));
-    }
-
-    this.db.sessionTrends = seeded;
-    if (this.mode !== 'mysql') {
-      this.markJsonDirty();
-    }
-  }
 }
 
 export const storage = new StorageManager();
-

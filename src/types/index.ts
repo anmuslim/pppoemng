@@ -217,26 +217,3 @@ export interface PingResult {
   timestamp: number;
 }
 
-export interface SessionTrendRecord {
-  id: string;
-  timestamp: string;
-  totalActive: number;
-  totalSecrets?: number;
-  totalTrafficRxMbps?: number;
-  totalTrafficTxMbps?: number;
-}
-
-export interface SessionTrendResponse {
-  range: string;
-  totalRecorded: number;
-  points: SessionTrendRecord[];
-  stats: {
-    current: number;
-    min: number;
-    max: number;
-    avg: number;
-    peakTime?: string;
-  };
-}
-
-

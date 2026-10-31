@@ -10,7 +10,6 @@ import {
   AuditLogItem,
   User,
   SessionTrafficInfo,
-  SessionTrendResponse,
 } from '../types/index.ts';
 
 const TOKEN_KEY = 'pppoe_manager_jwt';
@@ -330,10 +329,6 @@ export const api = {
 
   overview: {
     get: () => request<{ success: boolean; data: OverviewData }>('/api/overview'),
-    getTrends: (range: string = '24h') =>
-      request<{ success: boolean; data: SessionTrendResponse }>(
-        `/api/overview/trends?range=${encodeURIComponent(range)}`
-      ),
   },
 
   audit: {
