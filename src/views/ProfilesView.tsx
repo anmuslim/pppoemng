@@ -23,6 +23,7 @@ import {
   Check,
   RotateCw,
 } from 'lucide-react';
+import { copyToClipboard } from '../utils/clipboard.ts';
 
 export const ProfilesView: React.FC = () => {
   const { selectedRouterId, isMultiRouter, refreshTick, routers } = useRouterContext();
@@ -450,17 +451,19 @@ export const ProfilesView: React.FC = () => {
     {
       label: 'Salin Nama Profile',
       icon: <Copy className="w-3.5 h-3.5" />,
-      action: () => {
-        navigator.clipboard.writeText(p.name);
-        info('Tersalin', `Nama profile '${p.name}' disalin.`);
+      action: async () => {
+        const ok = await copyToClipboard(p.name);
+        if (ok) info('Tersalin', `Nama profile '${p.name}' disalin.`);
+        else error('Gagal Menyalin', 'Izin clipboard browser ditolak.');
       },
     },
     {
       label: 'Salin Rate Limit',
       icon: <Zap className="w-3.5 h-3.5" />,
-      action: () => {
-        navigator.clipboard.writeText(p.rateLimit || '');
-        info('Tersalin', `Rate limit '${p.rateLimit || 'unlimited'}' disalin.`);
+      action: async () => {
+        const ok = await copyToClipboard(p.rateLimit || 'unlimited');
+        if (ok) info('Tersalin', `Rate limit '${p.rateLimit || 'unlimited'}' disalin.`);
+        else error('Gagal Menyalin', 'Izin clipboard browser ditolak.');
       },
       divider: true,
     },

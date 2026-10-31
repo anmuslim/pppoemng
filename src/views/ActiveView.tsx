@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   LineChart,
 } from 'lucide-react';
+import { copyToClipboard } from '../utils/clipboard.ts';
 
 export const ActiveView: React.FC = () => {
   const { selectedRouterId, isMultiRouter, refreshTick, refreshInterval } = useRouterContext();
@@ -94,14 +95,18 @@ export const ActiveView: React.FC = () => {
     }
   };
 
-  const handleCopy = (text: string, key: string, label: string) => {
+  const handleCopy = async (text: string, key: string, label: string) => {
     if (!text || text === '—') return;
-    navigator.clipboard.writeText(text);
-    setCopiedKey(key);
-    info('Tersalin', `${label} '${text}' disalin ke clipboard.`);
-    setTimeout(() => {
-      setCopiedKey((prev) => (prev === key ? null : prev));
-    }, 1500);
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedKey(key);
+      info('Tersalin', `${label} '${text}' disalin ke clipboard.`);
+      setTimeout(() => {
+        setCopiedKey((prev) => (prev === key ? null : prev));
+      }, 1500);
+    } else {
+      error('Gagal Menyalin', 'Izin clipboard browser ditolak.');
+    }
   };
 
   const columns = useMemo<ColumnDef<PppActive>[]>(() => {

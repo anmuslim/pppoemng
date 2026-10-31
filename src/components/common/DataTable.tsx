@@ -34,6 +34,11 @@ import {
   ArrowLeft,
   ArrowRight,
   RotateCcw,
+  Plus,
+  Trash2,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { ContextMenu, ContextMenuItem } from './ContextMenu.tsx';
 import { useRouterContext } from '../../context/RouterContext.tsx';
@@ -150,6 +155,120 @@ export function bandwidthComparator(rowA: any, rowB: any, columnId: string) {
   return parseRate(rowA.getValue(columnId)) - parseRate(rowB.getValue(columnId));
 }
 
+/* ------------------------------------------------------------------ *
+ *  MikroTik Winbox Filter Types & Match Engine
+ * ------------------------------------------------------------------ */
+
+export type WinboxFilterOperator =
+  | 'contains'          // Mengandung kata/teks (case-insensitive)
+  | 'does_not_contain'  // Tidak mengandung
+  | 'equals'            // Sama persis (==)
+  | 'not_equals'        // Tidak sama persis (!=)
+  | 'starts_with'       // Diawali dengan
+  | 'ends_with'         // Diakhiri dengan
+  | 'is_empty'          // Kosong / Tidak diatur
+  | 'is_not_empty';     // Terisi / Memiliki nilai
+
+export interface WinboxFilterRule {
+  id: string;
+  field: string;
+  operator: WinboxFilterOperator;
+  value: string;
+  enabled?: boolean;
+}
+
+export type WinboxMatchMode = 'and' | 'or';
+
+export function extractFieldValue(item: any, field: string): string {
+  if (!item || typeof item !== 'object') return '';
+
+  const fLower = field.toLowerCase();
+
+  // Canonical RouterOS / MikroTik PPPoE field aliases
+  if (fLower === 'profile') {
+    return String(item.profile ?? item.profileName ?? '');
+  }
+  if (
+    fLower === 'remoteaddress' ||
+    fLower === 'address' ||
+    fLower === 'ip' ||
+    fLower === 'ipaddress' ||
+    fLower === 'target' ||
+    fLower === 'ranges'
+  ) {
+    // Check all possible IP fields so user can filter IP across Secrets, Active, Queues, Pools
+    return String(item.remoteAddress ?? item.address ?? item.target ?? item.ranges ?? item.localAddress ?? item.host ?? '');
+  }
+  if (fLower === 'service') {
+    return String(item.service ?? '');
+  }
+  if (fLower === 'name' || fLower === 'username') {
+    return String(item.name ?? item.username ?? '');
+  }
+  if (fLower === 'localaddress') {
+    return String(item.localAddress ?? '');
+  }
+  if (fLower === 'callerid' || fLower === 'mac') {
+    return String(item.callerId ?? item.lastCallerId ?? '');
+  }
+  if (fLower === 'comment' || fLower === 'notes') {
+    return String(item.comment ?? item.notes ?? '');
+  }
+  if (fLower.includes('status')) {
+    if (item.disabled !== undefined) {
+      return item.disabled ? 'disabled nonaktif isolir' : item.isActive ? 'aktif active online' : 'offline';
+    }
+    return String(item.status ?? (item.isActive ? 'aktif active online' : 'offline'));
+  }
+  if (fLower.includes('router')) {
+    return String(item.routerName ?? item.routerId ?? '');
+  }
+
+  // Direct property fallback
+  if (item[field] !== undefined && item[field] !== null) {
+    if (typeof item[field] === 'boolean') {
+      return item[field] ? 'true ya yes' : 'false tidak no';
+    }
+    return String(item[field]);
+  }
+
+  return '';
+}
+
+export function evaluateWinboxRule(rule: WinboxFilterRule, item: any): boolean {
+  if (rule.enabled === false) return true;
+  const rawValue = extractFieldValue(item, rule.field);
+  const val = rawValue.trim().toLowerCase();
+  const target = (rule.value || '').trim().toLowerCase();
+
+  switch (rule.operator) {
+    case 'contains':
+      if (!target) return true;
+      return val.includes(target);
+    case 'does_not_contain':
+      if (!target) return true;
+      return !val.includes(target);
+    case 'equals':
+      if (!target) return true;
+      return val === target;
+    case 'not_equals':
+      if (!target) return true;
+      return val !== target;
+    case 'starts_with':
+      if (!target) return true;
+      return val.startsWith(target);
+    case 'ends_with':
+      if (!target) return true;
+      return val.endsWith(target);
+    case 'is_empty':
+      return val === '' || val === '—' || val === 'none' || val === 'null' || val === 'undefined';
+    case 'is_not_empty':
+      return val !== '' && val !== '—' && val !== 'none' && val !== 'null' && val !== 'undefined';
+    default:
+      return true;
+  }
+}
+
 export interface DataTableProps<TData> {
   data: TData[];
   columns: ColumnDef<TData, any>[];
@@ -217,6 +336,189 @@ export function DataTable<TData extends object>({
   const [isColumnPickerOpen, setIsColumnPickerOpen] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+
+  // MikroTik Winbox Multi-Filter State
+  const [filterRules, setFilterRules] = useState<WinboxFilterRule[]>(() => {
+    try {
+      const saved = localStorage.getItem(`pppoe_tbl_winbox_rules_${tableId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  const [filterMatchMode, setFilterMatchMode] = useState<WinboxMatchMode>(() => {
+    return (localStorage.getItem(`pppoe_tbl_winbox_mode_${tableId}`) as WinboxMatchMode) || 'and';
+  });
+
+  const [isFilterEnabled, setIsFilterEnabled] = useState<boolean>(true);
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(`pppoe_tbl_winbox_rules_${tableId}`);
+      return Boolean(saved && JSON.parse(saved).length > 0);
+    } catch {
+      return false;
+    }
+  });
+
+  // Persist filter rules & mode to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(`pppoe_tbl_winbox_rules_${tableId}`, JSON.stringify(filterRules));
+      localStorage.setItem(`pppoe_tbl_winbox_mode_${tableId}`, filterMatchMode);
+    } catch {}
+  }, [filterRules, filterMatchMode, tableId]);
+
+  // Compute field options available for filtering (canonical MikroTik fields + column headers)
+  const filterFieldOptions = useMemo(() => {
+    const list: { id: string; label: string }[] = [];
+    const seen = new Set<string>();
+
+    const addOpt = (id: string, label: string) => {
+      const key = id.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push({ id, label });
+      }
+    };
+
+    // Canonical MikroTik PPPoE fields first
+    addOpt('profile', 'Profile');
+    addOpt('remoteAddress', 'IP Address (Remote / Local)');
+    addOpt('service', 'Service (pppoe, any, etc)');
+    addOpt('name', 'Name (Username)');
+    addOpt('comment', 'Comment / Catatan');
+    addOpt('localAddress', 'Local Address');
+    addOpt('callerId', 'Caller ID / MAC');
+    addOpt('status', 'Status (Aktif / Disabled)');
+    addOpt('routerName', 'Router');
+
+    // Add any table columns
+    columns.forEach((c) => {
+      const colId = (c as any).accessorKey || c.id;
+      if (!colId || colId === 'select' || colId === 'actions') return;
+      let label = typeof c.header === 'string' ? c.header : colId;
+      if (colId === 'statusIcon') label = 'Status';
+      addOpt(colId, label);
+    });
+
+    return list;
+  }, [columns]);
+
+  // Active filter rules (enabled and with a search target or empty check)
+  const activeRules = useMemo(() => {
+    return filterRules.filter(
+      (r) =>
+        r.enabled !== false &&
+        (r.operator === 'is_empty' || r.operator === 'is_not_empty' || (r.value && r.value.trim().length > 0))
+    );
+  }, [filterRules]);
+
+  // Filter data according to Winbox rules (AND / OR)
+  const winboxFilteredData = useMemo(() => {
+    if (!isFilterEnabled || activeRules.length === 0) return data;
+
+    return data.filter((item) => {
+      if (filterMatchMode === 'and') {
+        return activeRules.every((rule) => evaluateWinboxRule(rule, item));
+      } else {
+        return activeRules.some((rule) => evaluateWinboxRule(rule, item));
+      }
+    });
+  }, [data, activeRules, filterMatchMode, isFilterEnabled]);
+
+  // Add a new rule row
+  const addFilterRule = (field?: string, operator?: WinboxFilterOperator, value?: string) => {
+    const defaultField = field || filterFieldOptions[0]?.id || 'profile';
+    const newRule: WinboxFilterRule = {
+      id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      field: defaultField,
+      operator: operator || 'contains',
+      value: value || '',
+      enabled: true,
+    };
+    setFilterRules((prev) => [...prev, newRule]);
+    setIsFilterPanelOpen(true);
+    setIsFilterEnabled(true);
+  };
+
+  const updateFilterRule = (id: string, patch: Partial<WinboxFilterRule>) => {
+    setFilterRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
+  const removeFilterRule = (id: string) => {
+    setFilterRules((prev) => prev.filter((r) => r.id !== id));
+  };
+
+  const clearAllFilters = () => {
+    setFilterRules([]);
+    setGlobalFilter('');
+    setDebouncedGlobalFilter('');
+    setColumnFilters([]);
+    table.setPageIndex(0);
+  };
+
+  // Quick preset shortcuts as requested by user
+  const applyPresetProfileA = () => {
+    setFilterRules([
+      {
+        id: `rule-${Date.now()}-1`,
+        field: 'profile',
+        operator: 'contains',
+        value: 'A',
+        enabled: true,
+      },
+    ]);
+    setFilterMatchMode('and');
+    setIsFilterEnabled(true);
+    setIsFilterPanelOpen(true);
+  };
+
+  const applyPresetIp1010 = () => {
+    setFilterRules([
+      {
+        id: `rule-${Date.now()}-1`,
+        field: 'remoteAddress',
+        operator: 'contains',
+        value: '10.10.',
+        enabled: true,
+      },
+    ]);
+    setFilterMatchMode('and');
+    setIsFilterEnabled(true);
+    setIsFilterPanelOpen(true);
+  };
+
+  const applyPresetMultiFilter = () => {
+    setFilterRules([
+      {
+        id: `rule-${Date.now()}-1`,
+        field: 'profile',
+        operator: 'contains',
+        value: 'A',
+        enabled: true,
+      },
+      {
+        id: `rule-${Date.now()}-2`,
+        field: 'remoteAddress',
+        operator: 'contains',
+        value: '10.123',
+        enabled: true,
+      },
+      {
+        id: `rule-${Date.now()}-3`,
+        field: 'service',
+        operator: 'contains',
+        value: 'PPPOE',
+        enabled: true,
+      },
+    ]);
+    setFilterMatchMode('and');
+    setIsFilterEnabled(true);
+    setIsFilterPanelOpen(true);
+  };
 
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{
@@ -322,7 +624,7 @@ export function DataTable<TData extends object>({
   } catch {}
 
   const table = useReactTable({
-    data,
+    data: winboxFilteredData,
     columns,
     state: {
       sorting,
@@ -353,11 +655,10 @@ export function DataTable<TData extends object>({
     },
   });
 
-  // CRITICAL: Reset pagination to page 1 whenever search query or column filters change
-  // This guarantees search results from the entire dataset are immediately visible!
+  // CRITICAL: Reset pagination to page 1 whenever search query, column filters, or winbox filter changes
   useEffect(() => {
     table.setPageIndex(0);
-  }, [debouncedGlobalFilter, columnFilters]);
+  }, [debouncedGlobalFilter, columnFilters, winboxFilteredData]);
 
   // Keep page size synced
   useEffect(() => {
@@ -556,11 +857,34 @@ export function DataTable<TData extends object>({
             )}
           </div>
 
+          {/* MikroTik Winbox Multi-Filter Button */}
+          <button
+            type="button"
+            onClick={() => setIsFilterPanelOpen((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+              activeRules.length > 0 && isFilterEnabled
+                ? 'bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border-sky-400 dark:border-sky-700 ring-2 ring-sky-500/20 shadow-xs'
+                : isFilterPanelOpen
+                ? 'bg-slate-100 dark:bg-zinc-700 text-slate-900 dark:text-white border-slate-300 dark:border-zinc-600'
+                : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border-slate-300 dark:border-zinc-700 hover:bg-slate-50 dark:hover:bg-zinc-700'
+            }`}
+            title="Buka / Tutup Panel Filter MikroTik Multi-Rule"
+          >
+            <Filter className={`w-3.5 h-3.5 ${activeRules.length > 0 && isFilterEnabled ? 'text-sky-600 dark:text-sky-400' : ''}`} />
+            <span>Filter</span>
+            {activeRules.length > 0 && isFilterEnabled && (
+              <span className="px-1.5 py-0.2 rounded-full bg-sky-600 text-white text-[10px] font-bold">
+                {activeRules.length}
+              </span>
+            )}
+            {isFilterPanelOpen ? <ChevronUp className="w-3 h-3 opacity-60" /> : <ChevronDown className="w-3 h-3 opacity-60" />}
+          </button>
+
           {/* Export CSV */}
           <button
             onClick={handleExportCSV}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-zinc-200 bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 hover:bg-slate-50 dark:hover:bg-zinc-700 rounded-lg transition-colors"
-            title="Ekspor CSV"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-zinc-200 bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 hover:bg-slate-50 dark:hover:bg-zinc-700 rounded-lg transition-colors cursor-pointer"
+            title="Ekspor data hasil filter ke CSV"
           >
             <Download className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Ekspor CSV</span>
@@ -593,53 +917,313 @@ export function DataTable<TData extends object>({
         </div>
       )}
 
-      {/* Active Filter Chips */}
-      {(columnFilters.length > 0 || debouncedGlobalFilter) && (
-        <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
-          <span className="text-slate-400 dark:text-zinc-500 font-medium">Filter Aktif:</span>
-          {debouncedGlobalFilter && (
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 text-xs font-medium">
-              <span>Cari: "{debouncedGlobalFilter}"</span>
-              <span className="text-[10px] bg-sky-200/60 dark:bg-sky-900/60 px-1 rounded-sm text-sky-800 dark:text-sky-200 font-semibold font-mono">
-                {filteredCount} dari {totalCount} cocok
-              </span>
+      {/* MikroTik Winbox Multi-Filter Panel */}
+      {isFilterPanelOpen && (
+        <div className="bg-slate-50 dark:bg-zinc-900/90 border border-slate-300 dark:border-zinc-700/80 rounded-xl p-3 sm:p-4 space-y-3 shadow-md transition-all">
+          {/* Panel Header */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                <Filter className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <span>Filter MikroTik (Winbox Style)</span>
+                  {activeRules.length > 0 && isFilterEnabled && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 font-mono font-semibold">
+                      {activeRules.length} aturan aktif ({filteredCount} dari {totalCount} cocok)
+                    </span>
+                  )}
+                </span>
+                <p className="text-[10px] text-slate-500 dark:text-zinc-400">
+                  Saring data berdasarkan beberapa kriteria kolom sekaligus (multi-filter AND / OR)
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {/* Toggle Filter Active */}
+              <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-zinc-300 select-none mr-1">
+                <input
+                  type="checkbox"
+                  checked={isFilterEnabled}
+                  onChange={(e) => setIsFilterEnabled(e.target.checked)}
+                  className="rounded-xs text-sky-600 focus:ring-sky-500 w-3.5 h-3.5 cursor-pointer"
+                />
+                <span className="text-[11px] font-medium">Aktifkan Filter</span>
+              </label>
+
+              {/* Match Mode (AND / OR) */}
+              <div className="inline-flex rounded-lg border border-slate-300 dark:border-zinc-700 p-0.5 bg-white dark:bg-zinc-800 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setFilterMatchMode('and')}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    filterMatchMode === 'and'
+                      ? 'bg-sky-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                  title="Semua aturan harus cocok (AND)"
+                >
+                  Semua Cocok (AND)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMatchMode('or')}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    filterMatchMode === 'or'
+                      ? 'bg-sky-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                  title="Salah satu aturan cocok (OR)"
+                >
+                  Salah Satu (OR)
+                </button>
+              </div>
+
+              {/* Add Rule Button */}
               <button
+                type="button"
+                onClick={() => addFilterRule()}
+                className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors cursor-pointer shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Tambah Aturan</span>
+              </button>
+
+              {/* Reset Button */}
+              {filterRules.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-600 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                  title="Hapus seluruh aturan filter"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+
+              {/* Close Button */}
+              <button
+                type="button"
+                onClick={() => setIsFilterPanelOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 rounded-md cursor-pointer"
+                title="Tutup panel filter"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Rules List */}
+          {filterRules.length === 0 ? (
+            <div className="py-3 text-center border border-dashed border-slate-300 dark:border-zinc-800 rounded-lg bg-white/50 dark:bg-zinc-950/30">
+              <p className="text-xs text-slate-500 dark:text-zinc-400 mb-1">
+                Belum ada aturan filter yang ditambahkan.
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-zinc-500">
+                Klik tombol <strong>+ Tambah Aturan</strong> di atas atau coba salah satu <strong>Contoh Cepat</strong> di bawah ini.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filterRules.map((rule, idx) => (
+                <div
+                  key={rule.id}
+                  className="flex flex-wrap items-center gap-2 p-2 bg-white dark:bg-zinc-800/90 rounded-lg border border-slate-200 dark:border-zinc-700/80 shadow-2xs text-xs"
+                >
+                  {/* Rule Index Badge */}
+                  <span className="w-6 text-center text-[10px] font-mono font-bold text-slate-400 dark:text-zinc-500">
+                    #{idx + 1}
+                  </span>
+
+                  {/* Field Select */}
+                  <select
+                    value={rule.field}
+                    onChange={(e) => updateFilterRule(rule.id, { field: e.target.value })}
+                    className="py-1 px-2 bg-slate-50 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-md text-slate-800 dark:text-zinc-200 font-medium text-xs focus:ring-1 focus:ring-sky-500 cursor-pointer"
+                  >
+                    {filterFieldOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Operator Select */}
+                  <select
+                    value={rule.operator}
+                    onChange={(e) => updateFilterRule(rule.id, { operator: e.target.value as WinboxFilterOperator })}
+                    className="py-1 px-2 bg-slate-50 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-md text-slate-800 dark:text-zinc-200 text-xs focus:ring-1 focus:ring-sky-500 cursor-pointer"
+                  >
+                    <option value="contains">Mengandung (contains)</option>
+                    <option value="does_not_contain">Tidak mengandung</option>
+                    <option value="equals">Sama dengan (==)</option>
+                    <option value="not_equals">Tidak sama dengan (!=)</option>
+                    <option value="starts_with">Diawali dengan</option>
+                    <option value="ends_with">Diakhiri dengan</option>
+                    <option value="is_empty">Kosong (is empty)</option>
+                    <option value="is_not_empty">Tidak kosong (is not empty)</option>
+                  </select>
+
+                  {/* Value Input */}
+                  {rule.operator !== 'is_empty' && rule.operator !== 'is_not_empty' && (
+                    <div className="relative flex-1 min-w-[140px]">
+                      <input
+                        type="text"
+                        value={rule.value}
+                        onChange={(e) => updateFilterRule(rule.id, { value: e.target.value })}
+                        placeholder="Nilai yang dicari (contoh: A, 10.10., 10.123, PPPOE)..."
+                        className="w-full py-1 pl-2.5 pr-7 bg-slate-50 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-md text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-zinc-500 text-xs font-mono focus:ring-1 focus:ring-sky-500"
+                      />
+                      {rule.value && (
+                        <button
+                          type="button"
+                          onClick={() => updateFilterRule(rule.id, { value: '' })}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 cursor-pointer"
+                          title="Kosongkan nilai"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Enable/Disable Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => updateFilterRule(rule.id, { enabled: rule.enabled === false ? true : false })}
+                    className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors cursor-pointer ${
+                      rule.enabled !== false
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                        : 'bg-slate-100 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 border border-slate-200 dark:border-zinc-700 line-through'
+                    }`}
+                    title={rule.enabled !== false ? 'Klik untuk nonaktifkan aturan ini sementara' : 'Klik untuk aktifkan aturan'}
+                  >
+                    {rule.enabled !== false ? 'Aktif' : 'Mati'}
+                  </button>
+
+                  {/* Delete Rule Button */}
+                  <button
+                    type="button"
+                    onClick={() => removeFilterRule(rule.id)}
+                    className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-md transition-colors cursor-pointer"
+                    title="Hapus aturan ini"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Quick Preset Buttons (Contoh Cepat Sesuai Permintaan User) */}
+          <div className="pt-2 border-t border-slate-200 dark:border-zinc-800 flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-[11px] font-semibold text-slate-500 dark:text-zinc-400 flex items-center gap-1 mr-1">
+              <Sparkles className="w-3 h-3 text-amber-500" />
+              <span>Contoh Cepat:</span>
+            </span>
+            <button
+              type="button"
+              onClick={applyPresetProfileA}
+              className="px-2.5 py-1 rounded-md bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 hover:border-sky-500 hover:text-sky-600 dark:hover:text-sky-400 text-[11px] font-medium transition-colors cursor-pointer shadow-2xs"
+            >
+              Profile mengandung "A"
+            </button>
+            <button
+              type="button"
+              onClick={applyPresetIp1010}
+              className="px-2.5 py-1 rounded-md bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 hover:border-sky-500 hover:text-sky-600 dark:hover:text-sky-400 text-[11px] font-medium transition-colors cursor-pointer shadow-2xs"
+            >
+              IP Address mengandung "10.10."
+            </button>
+            <button
+              type="button"
+              onClick={applyPresetMultiFilter}
+              className="px-2.5 py-1 rounded-md bg-sky-50 dark:bg-sky-950/40 border border-sky-300 dark:border-sky-800 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/60 text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs"
+            >
+              Multi Filter: Profile "A" + IP "10.123" + Service "PPPOE"
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Active Filter Chips Bar (Always visible when filters or search are active) */}
+      {(activeRules.length > 0 || debouncedGlobalFilter) && (
+        <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-xs">
+          <span className="text-slate-400 dark:text-zinc-500 text-[11px] font-medium">
+            Filter Aktif ({filterMatchMode.toUpperCase()}):
+          </span>
+
+          {debouncedGlobalFilter && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 text-xs font-medium">
+              <span>Cari: "{debouncedGlobalFilter}"</span>
+              <button
+                type="button"
                 onClick={() => {
                   setGlobalFilter('');
                   setDebouncedGlobalFilter('');
-                  table.setPageIndex(0);
                 }}
-                className="hover:text-sky-900 dark:hover:text-white"
-                title="Hapus filter pencarian"
+                className="hover:text-sky-900 dark:hover:text-white cursor-pointer ml-0.5"
+                title="Hapus pencarian teks"
               >
                 <X className="w-3 h-3" />
               </button>
             </span>
           )}
-          {columnFilters.map((cf) => (
-            <span
-              key={cf.id}
-              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-slate-200 dark:border-zinc-700 text-xs"
-            >
-              <span>{cf.id}: {String(cf.value)}</span>
-              <button
-                onClick={() => setColumnFilters((prev) => prev.filter((f) => f.id !== cf.id))}
-                className="hover:text-rose-500"
+
+          {activeRules.map((rule) => {
+            const fieldOpt = filterFieldOptions.find((f) => f.id === rule.field);
+            const fieldLabel = fieldOpt ? fieldOpt.label : rule.field;
+            const opLabel =
+              rule.operator === 'contains'
+                ? 'mengandung'
+                : rule.operator === 'does_not_contain'
+                ? 'tidak mengandung'
+                : rule.operator === 'equals'
+                ? '=='
+                : rule.operator === 'not_equals'
+                ? '!='
+                : rule.operator === 'starts_with'
+                ? 'diawali'
+                : rule.operator === 'ends_with'
+                ? 'diakhiri'
+                : rule.operator === 'is_empty'
+                ? 'kosong'
+                : 'terisi';
+            return (
+              <span
+                key={rule.id}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 border border-slate-300 dark:border-zinc-700 text-xs shadow-2xs"
               >
-                <X className="w-3 h-3" />
-              </button>
-            </span>
-          ))}
+                <span className="font-semibold text-slate-900 dark:text-white">{fieldLabel}</span>
+                <span className="text-slate-500 dark:text-zinc-400 text-[10px]">{opLabel}</span>
+                {rule.operator !== 'is_empty' && rule.operator !== 'is_not_empty' && (
+                  <span className="font-mono text-sky-600 dark:text-sky-400 font-bold">"{rule.value}"</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeFilterRule(rule.id)}
+                  className="hover:text-rose-500 dark:hover:text-rose-400 ml-0.5 cursor-pointer"
+                  title="Hapus filter ini"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            );
+          })}
+
+          <span className="text-[11px] font-mono text-slate-500 dark:text-zinc-400 ml-1">
+            ({filteredCount} dari {totalCount} ditampilkan)
+          </span>
+
           <button
-            onClick={() => {
-              setGlobalFilter('');
-              setDebouncedGlobalFilter('');
-              setColumnFilters([]);
-              table.setPageIndex(0);
-            }}
-            className="text-xs text-sky-600 dark:text-sky-400 hover:underline font-medium ml-1"
+            type="button"
+            onClick={clearAllFilters}
+            className="text-[11px] text-sky-600 dark:text-sky-400 hover:underline font-semibold ml-1 cursor-pointer"
           >
-            Reset Semua Filter
+            Reset Semua
           </button>
         </div>
       )}
