@@ -97,6 +97,18 @@ router.get(
     const totalSecrets = rows.reduce((s, r) => s + r.secretCount, 0);
     const totalDisabled = rows.reduce((s, r) => s + r.disabledCount, 0);
 
+    const totalTrafficRxMbps = +(totalRxBps / 1_000_000).toFixed(2);
+    const totalTrafficTxMbps = +(totalTxBps / 1_000_000).toFixed(2);
+
+    // Rekam titik tren realtime ke riwayat jangka panjang
+    storage.recordSessionTrend({
+      timestamp: new Date().toISOString(),
+      totalActive,
+      totalSecrets,
+      totalTrafficRxMbps,
+      totalTrafficTxMbps,
+    });
+
     res.json({
       success: true,
       data: {
@@ -111,8 +123,8 @@ router.get(
           totalTrafficTx: formatRate(totalTxBps),
           totalTrafficDownload: formatRate(totalTxBps),
           totalTrafficUpload: formatRate(totalRxBps),
-          totalTrafficRxMbps: +(totalRxBps / 1_000_000).toFixed(2),
-          totalTrafficTxMbps: +(totalTxBps / 1_000_000).toFixed(2),
+          totalTrafficRxMbps,
+          totalTrafficTxMbps,
           totalTraffic: formatRate(totalRxBps + totalTxBps),
         },
         routerSummaries: rows,
@@ -122,4 +134,18 @@ router.get(
   })
 );
 
+// Endpoint riwayat tren sesi aktif dengan rentang waktu fleksibel (jam, harian, mingguan, bulanan, tahunan)
+router.get(
+  '/trends',
+  asyncHandler(async (req, res: Response) => {
+    const range = (req.query.range as string) || '24h';
+    const trendData = storage.getSessionTrends(range);
+    res.json({
+      success: true,
+      data: trendData,
+    });
+  })
+);
+
 export default router;
+

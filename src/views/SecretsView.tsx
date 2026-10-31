@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   XCircle,
   Copy,
+  Check,
   Edit2,
   Trash2,
   ToggleLeft,
@@ -28,6 +29,7 @@ import {
   Clock,
   Radio,
 } from 'lucide-react';
+import { copyToClipboard } from '../utils/clipboard.ts';
 
 export const SecretsView: React.FC = () => {
   const { selectedRouterId, isMultiRouter, refreshTick, routers } = useRouterContext();
@@ -50,6 +52,19 @@ export const SecretsView: React.FC = () => {
 
   // Revealed passwords set
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
+  const [copiedSecretKey, setCopiedSecretKey] = useState<string | null>(null);
+
+  const handleCopySecret = async (text: string, key: string, label: string) => {
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedSecretKey(key);
+      info('Tersalin', `${label} disalin ke clipboard.`);
+      setTimeout(() => setCopiedSecretKey((prev) => (prev === key ? null : prev)), 1500);
+    } else {
+      error('Gagal Menyalin', 'Izin clipboard browser ditolak.');
+    }
+  };
 
   // Modals
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -335,9 +350,26 @@ export const SecretsView: React.FC = () => {
         header: 'Name (Username)',
         cell: ({ row }) => {
           const s = row.original;
+          const isCopied = copiedSecretKey === `user-${s.name}`;
           return (
-            <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+            <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5 group/user">
               <span>{s.name}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopySecret(s.name, `user-${s.name}`, `Username '${s.name}'`);
+                }}
+                className={`p-1 rounded-md transition-all ${
+                  isCopied
+                    ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60'
+                    : 'text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 opacity-60 group-hover/user:opacity-100'
+                }`}
+                title={isCopied ? 'Username Tersalin!' : 'Salin Username'}
+                aria-label={`Salin Username ${s.name}`}
+              >
+                {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+              </button>
             </div>
           );
         },
@@ -348,8 +380,9 @@ export const SecretsView: React.FC = () => {
         cell: ({ row }) => {
           const s = row.original;
           const isRevealed = revealedPasswords[s.name];
+          const isCopied = copiedSecretKey === `pass-${s.name}`;
           return (
-            <div className="flex items-center gap-1.5 font-mono text-slate-600 dark:text-zinc-300">
+            <div className="flex items-center gap-1.5 font-mono text-slate-600 dark:text-zinc-300 group/pass">
               <span>{isRevealed ? s.password || '—' : '••••••••'}</span>
               <button
                 type="button"
@@ -361,6 +394,22 @@ export const SecretsView: React.FC = () => {
                 title={isRevealed ? 'Sembunyikan Password' : 'Lihat Password'}
               >
                 {isRevealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopySecret(s.password || '', `pass-${s.name}`, 'Password');
+                }}
+                className={`p-1 rounded-md transition-all ${
+                  isCopied
+                    ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60'
+                    : 'text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-800 opacity-60 group-hover/pass:opacity-100'
+                }`}
+                title={isCopied ? 'Password Tersalin!' : 'Salin Password'}
+                aria-label={`Salin Password ${s.name}`}
+              >
+                {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
               </button>
             </div>
           );
@@ -470,7 +519,7 @@ export const SecretsView: React.FC = () => {
     }
 
     return cols;
-  }, [isMultiRouter, revealedPasswords]);
+  }, [isMultiRouter, revealedPasswords, copiedSecretKey]);
 
   const getContextMenuItems = (s: PppSecret) => [
     {
@@ -487,16 +536,14 @@ export const SecretsView: React.FC = () => {
       label: 'Salin Username',
       icon: <Copy className="w-3.5 h-3.5" />,
       action: () => {
-        navigator.clipboard.writeText(s.name);
-        info('Tersalin', `Username '${s.name}' disalin ke clipboard.`);
+        handleCopySecret(s.name, `user-${s.name}`, `Username '${s.name}'`);
       },
     },
     {
       label: 'Salin Password',
       icon: <KeyRound className="w-3.5 h-3.5" />,
       action: () => {
-        navigator.clipboard.writeText(s.password || '');
-        info('Tersalin', 'Password disalin ke clipboard.');
+        handleCopySecret(s.password || '', `pass-${s.name}`, 'Password');
       },
       divider: true,
     },
